@@ -58,7 +58,7 @@ Look inside [`falk/vm/`](/falk/vm) to add more containers.
 ##### Host system (Kevin)
 
  - Install
-  - `python >=3.4`
+  - `python >=3.5`
   - `tornado`
   - `requests`
  - Create user `kevin` (you can, of course, change that)
@@ -71,7 +71,7 @@ Look inside [`falk/vm/`](/falk/vm) to add more containers.
 ##### VM provider (Falk)
 
  - Install
-  - `python >=3.4`
+  - `python >=3.5`
   - your container system of choice: `qemu`, ...
 
  - Create `/etc/kevin/falk.conf` from [`falk.conf.example`](/etc/falk.conf.example)
@@ -98,7 +98,7 @@ Look inside [`falk/vm/`](/falk/vm) to add more containers.
 
  - [Setup the OS](https://wiki.archlinux.org/index.php/QEMU#Creating_new_virtualized_system)
  - Install
-  - `python >=3.4`
+  - `python >=3.5`
   - `git`
   - `ssh` daemon
   - `sudo`

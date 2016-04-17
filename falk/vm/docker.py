@@ -27,6 +27,9 @@ class Docker(Container):
         cfg = ContainerConfig(machine_id, cfgdata, cfgpath)
 
         cfg.dockerfile = Path(cfgdata["dockerfile"])
+        if not cfg.dockerfile.is_absolute():
+            cfg.dockerfile = cfgpath / dockerfile
+        
         cfg.image_name = Path(cfgdata["image_name"])
         cfg.docker_client = docker.Client(base_url=cfgdata.get("docker_socket_uri", "unix://var/run/docker.sock"))
 

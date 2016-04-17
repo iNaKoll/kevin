@@ -5,6 +5,7 @@ Falk daemon config parsing
 from configparser import ConfigParser
 from pathlib import Path
 import re
+import os
 
 from .vm import CONTAINERS, ContainerConfig
 
@@ -17,8 +18,13 @@ class Config:
         # config created by Container.config()
         self.machines = dict()
 
-    def load(self, filename, shell=False):
+    def load(self, filename, dirpath=None, shell=False):
         cfg = ConfigParser()
+
+        if Path(dirpath).exists():
+            for root, dirs, files in os.walk(dirpath):
+                for fpath in files:
+                    cfg.read(fpath)
 
         if not Path(filename).exists():
             print("\x1b[31mConfig file '%s' does not exist.\x1b[m" % (

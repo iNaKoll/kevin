@@ -26,11 +26,12 @@ class Docker(Container):
     def config(cls, machine_id, cfgdata, cfgpath):
         cfg = ContainerConfig(machine_id, cfgdata, cfgpath)
 
-        cfg.dockerfile = Path(cfgdata["dockerfile"])
+        cfg.dockerfile = Path(cfgdata.get("dockerfile", "Dockerfile"))
         if not cfg.dockerfile.is_absolute():
             cfg.dockerfile = cfgpath / dockerfile
         
-        cfg.image_name = Path(cfgdata["image_name"])
+        cfg.image_name = cfgdata.get("image_name")
+        assert bool(cfg.image_name is not None) != cfg.dockerfile.exists(), "Falk docker provider configuration error, at least a docker file or an image name is required"
         cfg.docker_client = docker.Client(base_url=cfgdata.get("docker_socket_uri", "unix://var/run/docker.sock"))
 
         if not cfg.docker_file.is_file():

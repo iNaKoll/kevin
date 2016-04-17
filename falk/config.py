@@ -40,7 +40,7 @@ class Config:
                 falkcfg.get("control_socket_group"))
 
             # ssh ports may be a range or a single port
-            ssh_port_range = falkcfg["vm_ports"]
+            ssh_port_range = falkcfg["ssh_ports"]
             mat = re.match(r"\[(\d+),(\d+)\]", ssh_port_range)
             if mat:
                 # port range

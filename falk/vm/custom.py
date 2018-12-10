@@ -8,10 +8,10 @@ import os
 import shlex
 import subprocess
 
-from . import Container, ContainerConfig
+from . import SSHContainer, ContainerConfig
 
 
-class Custom(Container):
+class Custom(SSHContainer):
     """
     Represents a custom virtual machine/container
     launched by custom shell scripts.

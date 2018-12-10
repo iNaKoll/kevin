@@ -9,10 +9,10 @@ from pathlib import Path
 import shlex
 import subprocess
 
-from . import Container, ContainerConfig
+from . import SSHContainer, ContainerConfig
 
 
-class QEMU(Container):
+class QEMU(SSHContainer):
     """
     Represents a qemu virtual machine.
     """

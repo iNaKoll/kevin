@@ -287,7 +287,8 @@ class SSHProcess(Process):
             options = []
 
         ssh_cmd = [
-            "ssh", "-q",
+            #"ssh", "-q",
+            "ssh",
         ] + self.ssh_hash.get_options() + options + [
             "-p", str(ssh_port),
             ssh_user + "@" + ssh_host,

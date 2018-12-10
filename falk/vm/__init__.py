@@ -2,11 +2,14 @@
 VM management functionality
 """
 
+from kevin.process import Process, SSHProcess, ProcessFailed
+from kevin.util import SSHKnownHostFile
+
 from abc import ABCMeta, abstractmethod
+from pathlib import Path
 import logging
 import os
 import re
-from pathlib import Path
 
 
 # container class name -> class mapping
@@ -163,6 +166,9 @@ class Container(metaclass=ContainerMeta):
     """
 
     def __init__(self, cfg):
+        self.set_config(cfg)
+
+    def set_config(self, cfg):
         if not isinstance(cfg, ContainerConfig):
             raise ValueError("not a container config: %s" % cfg)
         self.cfg = cfg
@@ -200,6 +206,33 @@ class Container(metaclass=ContainerMeta):
         """
         Prepares the launch of the container,
         e.g. by creating a temporary runimage.
+        """
+        pass
+
+    @abstractmethod
+    async def execute(self, remote_command,
+                      timeout=INF, silence_timeout=INF,
+                      must_succeed=True):
+        """
+        Runs the command via ssh, returns an Process handle.
+        """
+        pass
+
+    @abstractmethod
+    async def upload(self, local_path, remote_folder=".", timeout=10):
+        """
+        Uploads the file or directory from local_path to
+        remote_folder (default: ~).
+        """
+        pass
+
+    @abstractmethod
+    async def download(self, remote_path, local_folder, timeout=10):
+        """
+        Downloads the file or directory from remote_path to local_folder.
+        Warning: Contains no safeguards regarding filesize.
+        Clever arguments for remote_path or local_folder might
+        allow break-outs.
         """
         pass
 
@@ -242,6 +275,76 @@ class Container(metaclass=ContainerMeta):
     async def cleanup(self):
         """ Cleanup the container, e.g. remove tmpfiles. """
         pass
+
+
+class SSHContainer(Container):
+
+    async def execute(self, remote_command,
+                      timeout=INF, silence_timeout=INF,
+                      must_succeed=True):
+        """
+        Runs the command via ssh, returns an Process handle.
+        """
+
+        return SSHProcess(remote_command,
+                          self.ssh_user, self.ssh_host,
+                          self.ssh_port, self.ssh_known_host_key,
+                          timeout=timeout,
+                          silence_timeout=silence_timeout,
+                          must_succeed=must_succeed)
+
+    async def upload(self, local_path, remote_folder=".", timeout=10):
+        """
+        Uploads the file or directory from local_path to
+        remote_folder (default: ~).
+        """
+
+        with SSHKnownHostFile(self.ssh_host,
+                              self.ssh_port,
+                              self.ssh_known_host_key) as hostfile:
+            command = [
+                "scp",
+                "-P", str(self.ssh_port),
+                "-q",
+            ] + hostfile.get_options() + [
+                "-r",
+                str(local_path),
+                self.ssh_user + "@" +
+                self.ssh_host + ":" +
+                str(remote_folder),
+            ]
+
+            async with Process(command) as proc:
+                ret = await proc.wait_for(timeout)
+
+                if ret != 0:
+                    raise ProcessFailed(ret, "scp upload failed")
+
+    async def download(self, remote_path, local_folder, timeout=10):
+        """
+        Downloads the file or directory from remote_path to local_folder.
+        Warning: Contains no safeguards regarding filesize.
+        Clever arguments for remote_path or local_folder might
+        allow break-outs.
+        """
+
+        with SSHKnownHostFile(self.machine.ssh_host,
+                              self.machine.ssh_port,
+                              self.machine.ssh_known_host_key) as hostfile:
+            command = [
+                "scp", "-q",
+                "-P", str(self.machine.ssh_port),
+            ] + hostfile.get_options() + [
+                "-r",
+                self.machine.ssh_user + "@" + self.machine.ssh_host + ":" + remote_path,
+                local_folder,
+            ]
+
+            async with Process(command) as proc:
+                ret = await proc.wait_for(timeout)
+
+                if ret != 0:
+                    raise ProcessFailed(ret, "scp down failed")
 
 
 # force class definitions too fill CONTAINERS dict

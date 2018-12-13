@@ -5,15 +5,87 @@ https://www.docker.com/
 """
 
 from pathlib import Path
+import asyncio
 import logging
 import io
 import os
+import shlex
 import tarfile
 import uuid
 
-from . import Container, ContainerConfig
+from .base import Container, ContainerConfig
+from kevin.util import INF
 import docker
 
+
+class _DockerProcess:
+
+    def __init__(self, dockerc_base, container_id, cmd,
+                 stdin=False, stdout=True, stderr=True,
+                 height=None, width=None):
+
+        self._dockerc_base = dockerc_base
+        self._container_id = container_id
+        self.cmd = cmd
+        tty = stdin
+        self._exec_res = self._dockerc_base.exec_create(
+            self._container, cmd, tty=tty,
+            stdin=stdin, stdout=stdout, stderr=stderr
+        )
+        self._exec_id = self._exec_res["Id"]
+        self._dockerc_base.exec_resize(self._exec_id, height=height, width=width)
+        self._web_socket = self._dockerc_base.exec_start(self._exec_id, tty=tty, socket=True)
+        self._inspect()
+
+    def _inspect(self):
+        self._inspect_res = self._client.exec_inspect(self._exec_id)
+
+    def poll(self):
+        self._inspect()
+
+    def wait(self):
+        raise NotImplementedError
+
+    def communicate(self):
+        raise NotImplementedError
+
+    @property
+    def stdin(self):
+        pass
+
+    @property
+    def stdout(self):
+        pass
+
+    @property
+    def stderr(self):
+        pass
+
+    @property
+    def returncode(self):
+        pass
+
+class DockerContainerConfig:
+    """
+    Configuration for a container.
+    Guarantees the existence of:
+     * Machine ID     (docker container id)
+     * Machine Name   (to match for)
+
+    Created from a config dict that contains key-value pairs.
+    """
+    def __init__(self, machine_id, cfg, cfgpath):
+
+        # store the machine id
+        self.machine_id = machine_id
+        self.cfgpath = cfgpath
+
+        config_keys = ("name", "ssh_user", "ssh_host", "ssh_port",
+                       "ssh_known_host_key", "ssh_known_host_key_file")
+
+        # set all config keys to None.
+        for key in config_keys:
+            setattr(self, key, None)
 
 class Docker(Container):
     """
@@ -27,7 +99,7 @@ class Docker(Container):
 
     @classmethod
     def config(cls, machine_id, cfgdata, cfgpath):
-        cfg = ContainerConfig(machine_id, cfgdata, cfgpath)
+        cfg = DockerContainerConfig(machine_id, cfgdata, cfgpath)
 
         cfg.dockerfile = Path(cfgdata.get("dockerfile", "Dockerfile"))
         if not cfg.dockerfile.is_absolute():
@@ -40,7 +112,7 @@ class Docker(Container):
 
         base_url = cfgdata.get(
             "docker_socket_uri", "unix://var/run/docker.sock")
-        cfg.dockerc = docker.DockerClient(base_url=base_url)
+        cfg.dockerc = docker.Client(base_url=base_url)
         cfg.dockerc_base = docker.APIClient(base_url=base_url)
 
         if not cfg.dockerfile.is_file():
@@ -155,3 +227,21 @@ class Docker(Container):
             await asyncio.get_event_loop().run_in_executor(
                 None, self.cfg.dockerc_base.remove_container, self.container.id)
             self.container = None
+
+
+# tests
+async def main():
+    cfgdata = {"image_name": "ubuntu"}
+    cfgpath = Path(__file__).parent / "tests"
+    machine_id = "zorro"
+    container = Docker(Docker.config(machine_id, cfgdata, cfgpath))
+    await container.prepare()
+    await container.launch()
+    print("Container {} is running {}".format(
+        container,
+        await container.is_running()
+    ))
+
+
+if __name__ == "__main__":
+    asyncio.get_event_loop().run_until_complete(main())

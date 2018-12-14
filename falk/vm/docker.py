@@ -4,88 +4,118 @@ Docker containers.
 https://www.docker.com/
 """
 
+from asyncio import base_subprocess
 from pathlib import Path
 import asyncio
 import logging
 import io
 import os
 import shlex
+import subprocess
 import tarfile
 import uuid
 
-from .base import Container, ContainerConfig
+from .base import Container, ContainerConfig, DockerContainerConfig
 from kevin.util import INF
 import docker
 
 
 class _DockerProcess:
+    """
+    A class representing a remote docker container process and implementing
+    the subprocess.Popen class interface.
+    """
 
     def __init__(self, dockerc_base, container_id, cmd,
-                 stdin=False, stdout=True, stderr=True,
                  height=None, width=None):
 
         self._dockerc_base = dockerc_base
         self._container_id = container_id
         self.cmd = cmd
-        tty = stdin
+        stdin = True
+        stdout = True
+        stderr = True
+        tty = True
         self._exec_res = self._dockerc_base.exec_create(
-            self._container, cmd, tty=tty,
+            self._container_id, cmd, tty=tty,
             stdin=stdin, stdout=stdout, stderr=stderr
         )
         self._exec_id = self._exec_res["Id"]
-        self._dockerc_base.exec_resize(self._exec_id, height=height, width=width)
-        self._web_socket = self._dockerc_base.exec_start(self._exec_id, tty=tty, socket=True)
+        #self._dockerc_base.exec_resize(
+        #    self._exec_id, height=height, width=width)
+        self._socket = self._dockerc_base.exec_start(
+            self._exec_id, tty=tty, socket=True)
         self._inspect()
 
     def _inspect(self):
-        self._inspect_res = self._client.exec_inspect(self._exec_id)
+        self._inspect_res = self._dockerc_base.exec_inspect(self._exec_id)
 
     def poll(self):
         self._inspect()
 
-    def wait(self):
+    def wait(self, timeout=None):
+        """
+        Not used by asyncio
+        """
         raise NotImplementedError
 
-    def communicate(self):
+    def communicate(input=None, timeout=None):
+        """
+        Not used by asyncio
+        """
         raise NotImplementedError
+
+    def send_signal(self, signal):
+        pass
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+    @property
+    def args(self):
+        pass
 
     @property
     def stdin(self):
-        pass
+        return io.Bytes
+        return self._socket
 
     @property
     def stdout(self):
-        pass
+        return self._socket
 
     @property
     def stderr(self):
+        return self._socket
+
+    @property
+    def pid(self):
         pass
 
     @property
     def returncode(self):
         pass
 
-class DockerContainerConfig:
-    """
-    Configuration for a container.
-    Guarantees the existence of:
-     * Machine ID     (docker container id)
-     * Machine Name   (to match for)
 
-    Created from a config dict that contains key-value pairs.
-    """
-    def __init__(self, machine_id, cfg, cfgpath):
+class _DockerProcessTransport(base_subprocess.BaseSubprocessTransport):
 
-        # store the machine id
-        self.machine_id = machine_id
-        self.cfgpath = cfgpath
+    def __init__(self, loop, protocol, args, shell,
+                 stdin, stdout, stderr, bufsize, dockerc_base, container_id,
+                 waiter=None, extra=None, **kwargs):
+        self.dockerc_base = dockerc_base
+        self.container_id = container_id
+        super(_DockerProcessTransport, self).__init__(
+            loop, protocol, args, shell,
+            stdin, stdout, stderr, bufsize,
+            waiter=waiter, extra=extra, **kwargs)
 
-        config_keys = ("name", "ssh_user", "ssh_host", "ssh_port",
-                       "ssh_known_host_key", "ssh_known_host_key_file")
+    def _start(self, args, shell, stdin, stdout,
+               stderr, bufsize, **kwargs):
+        self._proc = _DockerProcess(self.dockerc_base, self.container_id, args)
 
-        # set all config keys to None.
-        for key in config_keys:
-            setattr(self, key, None)
 
 class Docker(Container):
     """
@@ -112,7 +142,7 @@ class Docker(Container):
 
         base_url = cfgdata.get(
             "docker_socket_uri", "unix://var/run/docker.sock")
-        cfg.dockerc = docker.Client(base_url=base_url)
+        cfg.dockerc = docker.DockerClient(base_url=base_url)
         cfg.dockerc_base = docker.APIClient(base_url=base_url)
 
         if not cfg.dockerfile.is_file():
@@ -152,14 +182,31 @@ class Docker(Container):
             # TODO: error ?
             pass
 
-    async def execute(self, remote_command,
+    async def execute(self, cmd,
                       timeout=INF, silence_timeout=INF,
                       must_succeed=True):
         """
         Runs the command via ssh, returns an Process handle.
         """
-
-        ws = self.cfg.dockerc_base.attach_socket(self.container.id, ws=True)
+        loop = asyncio.get_event_loop()
+        protocol = asyncio.subprocess.SubprocessStreamProtocol(limit=4096, loop=loop),
+        waiter = loop.create_future()
+        transport = _DockerProcessTransport(
+            loop=loop, protocol=protocol, args=cmd, shell=False,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, bufsize=4096, waiter=waiter,
+            dockerc_base=self.cfg.dockerc_base, container_id=self.container.id)
+        try:
+            await waiter
+        except Exception:
+            transport.close()
+            await transport._wait()
+            raise
+        return asyncio.subprocess.Process(
+            transport=transport,
+            protocol=protocol,
+            loop=loop,
+        )
 
     async def upload(self, local_path, remote_folder="/", timeout=10):
         """
@@ -212,7 +259,7 @@ class Docker(Container):
     async def is_running(self):
         if self.container is not None:
             self.container = await asyncio.get_event_loop().run_in_executor(
-                self.cfg.dockerc.containers.get, self.container.id)
+                None, self.cfg.dockerc.containers.get, self.container.id)
             return self.container.status == "running"
         else:
             return False
@@ -221,6 +268,12 @@ class Docker(Container):
         if self.container is not None:
             await asyncio.get_event_loop().run_in_executor(
                 None, self.cfg.dockerc_base.stop, self.container.id)
+
+    async def wait_for_shutdown(self, timeout=60):
+        """
+        sleep for a maximum of `timeout` until the container terminates.
+        """
+        raise NotImplementedError
 
     async def cleanup(self):
         if self.container is not None:
@@ -231,7 +284,7 @@ class Docker(Container):
 
 # tests
 async def main():
-    cfgdata = {"image_name": "ubuntu"}
+    cfgdata = {"type": "docker", "image_name": "ubuntu"}
     cfgpath = Path(__file__).parent / "tests"
     machine_id = "zorro"
     container = Docker(Docker.config(machine_id, cfgdata, cfgpath))
@@ -241,6 +294,9 @@ async def main():
         container,
         await container.is_running()
     ))
+    p = await container.execute("ls -al")
+    print(await p.communicate())
+    await container.terminate()
 
 
 if __name__ == "__main__":

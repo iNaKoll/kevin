@@ -9,7 +9,7 @@ from pathlib import Path
 import shlex
 import subprocess
 
-from . import SSHContainer, ContainerConfig
+from . import SSHContainer, SSHContainerConfig
 
 
 class QEMU(SSHContainer):
@@ -25,7 +25,7 @@ class QEMU(SSHContainer):
 
     @classmethod
     def config(cls, machine_id, cfgdata, cfgpath):
-        cfg = ContainerConfig(machine_id, cfgdata, cfgpath)
+        cfg = SSHContainerConfig(machine_id, cfgdata, cfgpath)
 
         base_img = Path(cfgdata["base_image"])
         if not base_img.is_absolute():

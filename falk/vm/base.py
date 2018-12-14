@@ -27,7 +27,31 @@ class ContainerMeta(ABCMeta):
         CONTAINERS[cls.containertype()] = cls
 
 
+class ContainerConfigMeta:
+
+    def __call__(self, machine_id, cfg, cfgpath):
+        if cfg["type"] == "docker":
+            cls = DockerContainerConfig
+        else:
+            cls = SSHContainerConfig
+        obj = cls.__new__(cls)
+        obj.__init__(machine_id, cfg, cfgpath)
+        return obj
+
+
 class ContainerConfig:
+    """
+    Configuration for a container.
+    Guarantees the existence of:
+     * VM access data (SSH, docker url, ...)
+     * Machine ID     (id unique in this falk instance)
+     * Machine Name   (to match for)
+
+    Created from a config dict that contains key-value pairs.
+    """
+
+
+class SSHContainerConfig(ContainerConfig):
     """
     Configuration for a container.
     Guarantees the existence of:
@@ -37,6 +61,7 @@ class ContainerConfig:
 
     Created from a config dict that contains key-value pairs.
     """
+
     def __init__(self, machine_id, cfg, cfgpath):
 
         # store the machine id
@@ -137,7 +162,6 @@ class ContainerConfig:
                             self.machine_id)
             self.ssh_host = "localhost"
 
-
         if not self.ssh_known_host_key:
             logging.warning("[vm] \x1b[33mwarning\x1b[m: "
                             "'%s' doesn't have ssh-key configured, "
@@ -151,6 +175,30 @@ class ContainerConfig:
 
         if not self.ssh_user:
             raise KeyError("[%s] config is missing 'ssh_user'" % (self.name))
+
+
+class DockerContainerConfig(ContainerConfig):
+    """
+    Configuration for a container.
+    Guarantees the existence of:
+     * Machine ID     (docker container id)
+     * Machine Name   (to match for)
+
+    Created from a config dict that contains key-value pairs.
+    """
+
+    def __init__(self, machine_id, cfg, cfgpath):
+
+        # store the machine id
+        self.machine_id = machine_id
+        self.cfgpath = cfgpath
+
+        config_keys = ("name", "ssh_user", "ssh_host", "ssh_port",
+                       "ssh_known_host_key", "ssh_known_host_key_file")
+
+        # set all config keys to None.
+        for key in config_keys:
+            setattr(self, key, None)
 
 
 class Container(metaclass=ContainerMeta):
@@ -172,15 +220,6 @@ class Container(metaclass=ContainerMeta):
         if not isinstance(cfg, ContainerConfig):
             raise ValueError("not a container config: %s" % cfg)
         self.cfg = cfg
-        self.ssh_user = self.cfg.ssh_user
-        self.ssh_host = self.cfg.ssh_host
-        self.ssh_known_host_key = self.cfg.ssh_known_host_key
-        self.ssh_port = self.cfg.ssh_port
-
-        if self.ssh_port is None:
-            raise ValueError("ssh port not yet set!")
-        if self.ssh_user is None:
-            raise ValueError("ssh user not set!")
 
     @classmethod
     def containertype(cls):
@@ -262,7 +301,7 @@ class Container(metaclass=ContainerMeta):
     @abstractmethod
     async def wait_for_shutdown(self, timeout=60):
         """
-        Sleep for a maximum of `timeout` until the container terminates.
+        sleep for a maximum of `timeout` until the container terminates.
         """
         pass
 
@@ -278,6 +317,18 @@ class Container(metaclass=ContainerMeta):
 
 
 class SSHContainer(Container):
+
+    def set_config(self, cfg):
+        super(Container, self).set_config(cfg)
+        self.ssh_user = self.cfg.ssh_user
+        self.ssh_host = self.cfg.ssh_host
+        self.ssh_known_host_key = self.cfg.ssh_known_host_key
+        self.ssh_port = self.cfg.ssh_port
+
+        if self.ssh_port is None:
+            raise ValueError("ssh port not yet set!")
+        if self.ssh_user is None:
+            raise ValueError("ssh user not set!")
 
     async def execute(self, remote_command,
                       timeout=INF, silence_timeout=INF,
@@ -345,4 +396,3 @@ class SSHContainer(Container):
 
                 if ret != 0:
                     raise ProcessFailed(ret, "scp down failed")
-

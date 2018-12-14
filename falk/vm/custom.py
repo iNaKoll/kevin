@@ -8,7 +8,7 @@ import os
 import shlex
 import subprocess
 
-from . import SSHContainer, ContainerConfig
+from . import SSHContainer, SSHContainerConfig
 
 
 class Custom(SSHContainer):
@@ -24,7 +24,7 @@ class Custom(SSHContainer):
 
     @classmethod
     def config(cls, machine_id, cfgdata, cfgpath):
-        cfg = ContainerConfig(machine_id, cfgdata, cfgpath)
+        cfg = SSHContainerConfig(machine_id, cfgdata, cfgpath)
 
         cfg.prepare = cfgdata["prepare"]
         cfg.launch = cfgdata["launch"]

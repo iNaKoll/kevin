@@ -30,7 +30,7 @@ class _DockerProcess:
     the subprocess.Popen class interface.
     """
 
-    def __init__(self, container, cmd, protocol, waiter,
+    def __init__(self, loop, container, cmd, protocol, waiter, on_exit,
                  height=None, width=None):
 
         self._container = container
@@ -39,10 +39,11 @@ class _DockerProcess:
         self._cmd = cmd
         self._protocol = protocol
         self._docker_waiter = waiter
-        self._height = height
-        self._width = width
+        self._on_exit = on_exit
+        self._height = height or 600
+        self._width = width or 800
         self._returncode = None
-        self._loop = asyncio.get_event_loop()
+        self._loop = loop
 
         self._init_event = threading.Event()
         asyncio.ensure_future(
@@ -64,31 +65,34 @@ class _DockerProcess:
                 1: self._stdout_w,
                 2: self._stderr_w,
             }
-            self._loop.add_reader(self._stdin_r, self._process_writer)
+            loop.add_reader(self._stdin_r, self._process_writer)
 
             self._exec_res = self._dockerc_base.exec_create(
                 self._container_id, self._cmd, tty=False,
                 stdin=True, stdout=True, stderr=True
             )
             self._exec_id = self._exec_res["Id"]
-            #self._dockerc_base.exec_resize(
-            #    self._exec_id, height=self._height, width=self._width)
+            # FIXME: exec_resize request throw an HTTP 500 error
+            # self._dockerc_base.exec_resize(
+            #     self._exec_id, height=self._height, width=self._width)
             self._socket = self._dockerc_base.exec_start(
                 self._exec_id, detach=False, tty=False, stream=True, socket=True)._sock
 
             self._inspect_res = self._dockerc_base.exec_inspect(self._exec_id)
             self._pid = self._inspect_res["Pid"]
-            #asyncio.ensure_future(self._watcher(), loop=loop)
         except:
+            # This is only useful for debugging
             logging.exception("")
+            loop.close()
             raise
         finally:
             self._init_event.set()
-            loop.run_until_complete(self._process_read())
+
+        loop.run_until_complete(self._process_read())
+        loop.close()
 
     def _inspect(self):
         self._inspect_res = self._dockerc_base.exec_inspect(self._exec_id)
-        print("inspect")
         self._pid = self._inspect_res["Pid"]
         if not self._inspect_res["Running"]:
             self._returncode = self._inspect_res["ExitCode"]
@@ -110,7 +114,7 @@ class _DockerProcess:
                 # Inspect container
                 self._inspect()
                 if not self._docker_waiter.done():
-                    self._docker_waiter.set_result(None)
+                    self._loop.call_soon_threadsafe(self._docker_waiter.set_result, None)
 
                 # Read output and error streams
                 if fd > 0:
@@ -119,25 +123,24 @@ class _DockerProcess:
                     data = data[missing:]
                     if len(frames[fd]) == lenght:
                         os.write(self._streams[fd], frames[fd])
-                        #stream_protocols[fd].feed_data(frames[fd])
+                        self._loop.call_soon_threadsafe(
+                            stream_protocols[fd].feed_data, frames[fd][:]
+                        )
                         frames[fd] = b""
                         fd = - 1
                         lenght = None
-                if len(data) >= 8:
+                elif len(data) >= 8:
                     fd, lenght = struct.unpack_from(b">BxxxI", data[:8])
                     data = data[8:]
-                    if data:
-                        continue
-                chunk = self._socket.recv(4096)
-                data += chunk
-                asyncio.sleep(0.05)
-        except OSError:
-            pass
+
+                if not data:
+                    await asyncio.sleep(0.100)
+                    chunk = self._socket.recv(4096)
+                    data += chunk
         finally:
-            if self._protocol.stdout is not None:
-                self._protocol.stdout.feed_eof()
-            if self._protocol.stderr is not None:
-                self._protocol.stderr.feed_eof()
+            self._loop.call_soon_threadsafe(self._protocol.stdout.feed_eof)
+            self._loop.call_soon_threadsafe(self._protocol.stderr.feed_eof)
+            self._loop.call_soon_threadsafe(self._on_exit, self._returncode)
             os.close(self._stdout_w)
             os.close(self._stderr_w)
 
@@ -147,17 +150,11 @@ class _DockerProcess:
             self._socket.send(os.read(self._stdin_r))
             data = os.read(self._stdin_r, 4096)
 
-    async def _watcher(self):
-        try:
-            while self.returncode is None:
-                print("watcher")
-        except:
-            logging.exception("")
-            raise
-
     def poll(self):
         asyncio.ensure_future(self._inspect(), loop=self._loop)
-        # FIXME: race condition over self._inspect_res HERE
+        # FIXME, synchronization issue here:
+        # _inspect_res has not yet been updated by the _inspect call above
+        # This might cause an undesirable delay in the exit code propagation
         if not self._inspect_res["Running"]:
             self._returncode = self._inspect_res["ExitCode"]
         return self._returncode
@@ -218,6 +215,7 @@ class _DockerProcessTransport(base_subprocess.BaseSubprocessTransport):
         self.dockerc_base = dockerc_base
         self.container = container
         self._docker_waiter = waiter
+        self._docker_loop = loop
         super(_DockerProcessTransport, self).__init__(
             loop, protocol, args, shell,
             stdin, stdout, stderr, bufsize,
@@ -225,7 +223,10 @@ class _DockerProcessTransport(base_subprocess.BaseSubprocessTransport):
 
     def _start(self, args, shell, stdin, stdout,
                stderr, bufsize, **kwargs):
-        self._proc = _DockerProcess(self.container, args, self._protocol, self._docker_waiter)
+        self._proc = _DockerProcess(
+            self._docker_loop, self.container, args,
+            self._protocol, self._docker_waiter, self._process_exited
+        )
 
 
 class Docker(Container):
@@ -302,15 +303,14 @@ class Docker(Container):
         """
         loop = asyncio.get_event_loop()
         protocol = asyncio.subprocess.SubprocessStreamProtocol(limit=4096, loop=loop)
-        waiter = concurrent.futures.Future()
+        waiter = loop.create_future()
         transport = _DockerProcessTransport(
             loop=loop, protocol=protocol, args=cmd, shell=False,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, bufsize=4096, waiter=waiter,
             dockerc_base=self.cfg.dockerc_base, container=self)
         try:
-            print("await docker process transport")
-            await asyncio.wrap_future(waiter)
+            await waiter
         except Exception:
             logging.exception("")
             transport.close()
@@ -405,7 +405,9 @@ class Docker(Container):
             self.container = None
 
 
-# tests
+# Tests
+# Usage:
+#   python -m falk.vm.docker
 async def main():
     cfgdata = {"type": "docker", "image_name": "ubuntu"}
     cfgpath = Path(__file__).parent / "tests"
@@ -421,8 +423,8 @@ async def main():
     p = await container.execute("ls -al")
     print("communicate...")
     out, err = await p.communicate()
-    print("stdout", out)
-    print("stderr", err)
+    print("stdout:\n{}\n\nstderr:\n{}".format(
+        out.decode('utf-8'), err.decode('utf-8')))
     await container.terminate()
 
 
@@ -431,5 +433,5 @@ if __name__ == "__main__":
     warnings.simplefilter('always', ResourceWarning)
     loop = asyncio.get_event_loop()
     loop.set_debug(True)
-    loop.slow_callback_duration = 0.001
+    loop.slow_callback_duration = 0.5
     loop.run_until_complete(main())
